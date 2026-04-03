@@ -56,23 +56,8 @@ sent_1 = page[page["sentence_id"] == 1].sort_values("char_index")
 global_order = page.sort_values("global_index")
 ```
 
-## Citation
-
-If you use this dataset in your research, please cite:
-
-```bibtex
-@article{zheng2025dongbahro,
-  title={Hierarchical Reading Order Prediction for Dongba Manuscripts via Masked Cross-Attention},
-  author={Zheng, Xiaoying and Cheng, Bodong and Shi, Jinxin and Zhou, Aimin},
-  journal={International Journal on Document Analysis and Recognition (IJDAR)},
-  year={2025}
-}
-```
-
 ## License
 
 This dataset is released under the [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) license for academic research purposes only.
 
-## Contact
 
-For questions or access requests, please contact the corresponding author: Aimin Zhou (amzhou@cs.ecnu.edu.cn).
