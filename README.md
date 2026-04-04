@@ -48,56 +48,22 @@ Three domain experts in Dongba script annotated the manuscripts using a custom-b
 
 ## Code
 
-### Project Structure
-
-| File | Description |
-|------|-------------|
-| `DongbaHRO.py` | Training and evaluation pipeline |
-| `train_baseline.py` | Baseline model |
-| Other model scripts | Comparative models (GNN, GCN, etc.) |
-
 ### Training & Evaluation
 
-```bash
-# Run training and evaluation
-python DongbaHRO.py
-```
+`DongbaHRO.py` provides the unified training and evaluation pipeline.
 
-### Baseline Model
+### Models
 
-```bash
-python train_baseline.py
-```
+| File | Model |
+|------|-------|
+| `train_baseline_corrected.py` | Baseline |
+| `train_gnn_baseline.py` | GNN / GCN (use `--gnn_type gnn` or `--gnn_type gcn`) |
+| `train_listnet_baseline.py` | ListNet |
+| `train_pairwise.py` | Pairwise |
+| `train_pointer.py` | Pointer Network |
+| `train_transformer_baseline.py` | Transformer |
 
-### Comparative Models (GNN / GCN)
-
-Use the `--gnn_type` argument to select the graph neural network variant. The hidden dimension is set to 256 for all models.
-
-```bash
-# GCN
-python train_baseline.py --gnn_type gcn --hidden_dim 256
-
-# GNN
-python train_baseline.py --gnn_type gnn --hidden_dim 256
-```
-
-## Usage Example
-
-```python
-import pandas as pd
-
-# Load a single page annotation
-page = pd.read_csv("data/train/page_001.csv")
-
-# Get sentence-level order
-sentences = page.groupby("sentence_id").first().sort_values("sentence_index")
-
-# Get character-level order within a sentence
-sent_1 = page[page["sentence_id"] == 1].sort_values("char_index")
-
-# Get global reading order
-global_order = page.sort_values("global_index")
-```
+All models use `--hidden_dim 256` by default.
 
 ## License
 
