@@ -4,7 +4,15 @@
 
 DongbaHRO is the first character-level hierarchical reading order dataset for Dongba pictographic manuscripts. It provides both sentence-level and character-level reading order annotations, supporting research on reading order prediction, document layout analysis, and digital preservation of endangered cultural heritage.
 
-## Dataset Statistics
+## Dataset
+
+### Download
+
+The full dataset (images + annotations) is hosted on Hugging Face:
+
+👉 **[https://huggingface.co/datasets/zhengxiaoying/DongbaHRO](https://huggingface.co/datasets/zhengxiaoying/DongbaHRO)**
+
+### Statistics
 
 | Item | Count |
 |------|-------|
@@ -13,7 +21,15 @@ DongbaHRO is the first character-level hierarchical reading order dataset for Do
 | Characters | 30,857 |
 | Annotation levels | 2 (sentence + character) |
 
-## Annotation Format
+### Data Splits
+
+| Split | Pages |
+|-------|-------|
+| Training | 308 (70%) |
+| Validation | 66 (15%) |
+| Test | 66 (15%) |
+
+### Annotation Format
 
 Each page is stored as a CSV file with the following fields:
 
@@ -26,19 +42,46 @@ Each page is stored as a CSV file with the following fields:
 | `char_index` | Reading order index of the character within its sentence |
 | `global_index` | Reading order index of the character within the full page |
 
-## Data Splits
-
-| Split | Pages |
-|-------|-------|
-| Training | 308 (70%) |
-| Validation | 66 (15%) |
-| Test | 66 (15%) |
-
-## Annotation Process
+### Annotation Process
 
 Three domain experts in Dongba script annotated the manuscripts using a custom-built hierarchical annotation tool. The annotation procedure follows two levels: (1) sentence-level ordering across the full page, and (2) character-level ordering within each sentence.
 
-## Usage
+## Code
+
+### Project Structure
+
+| File | Description |
+|------|-------------|
+| `DongbaHRO.py` | Training and evaluation pipeline |
+| `train_baseline.py` | Baseline model |
+| Other model scripts | Comparative models (GNN, GCN, etc.) |
+
+### Training & Evaluation
+
+```bash
+# Run training and evaluation
+python DongbaHRO.py
+```
+
+### Baseline Model
+
+```bash
+python train_baseline.py
+```
+
+### Comparative Models (GNN / GCN)
+
+Use the `--gnn_type` argument to select the graph neural network variant. The hidden dimension is set to 256 for all models.
+
+```bash
+# GCN
+python train_baseline.py --gnn_type gcn --hidden_dim 256
+
+# GNN
+python train_baseline.py --gnn_type gnn --hidden_dim 256
+```
+
+## Usage Example
 
 ```python
 import pandas as pd
@@ -59,5 +102,3 @@ global_order = page.sort_values("global_index")
 ## License
 
 This dataset is released under the [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) license for academic research purposes only.
-
-
