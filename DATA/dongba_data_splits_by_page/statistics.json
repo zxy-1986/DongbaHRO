@@ -1,0 +1,208 @@
+{
+  "total_characters": 30857,
+  "total_pages": 440,
+  "total_projects": 33,
+  "total_sentences": 3637,
+  "avg_chars_per_sentence": 8.484190266703328,
+  "avg_sentences_per_page": 8.26590909090909,
+  "projects": [
+    {
+      "prj_id": 44,
+      "pages": 51,
+      "characters": 4277,
+      "sentences": 504
+    },
+    {
+      "prj_id": 118,
+      "pages": 21,
+      "characters": 2770,
+      "sentences": 196
+    },
+    {
+      "prj_id": 49,
+      "pages": 21,
+      "characters": 1799,
+      "sentences": 140
+    },
+    {
+      "prj_id": 21,
+      "pages": 22,
+      "characters": 1612,
+      "sentences": 175
+    },
+    {
+      "prj_id": 9,
+      "pages": 29,
+      "characters": 1566,
+      "sentences": 248
+    },
+    {
+      "prj_id": 33,
+      "pages": 28,
+      "characters": 1362,
+      "sentences": 201
+    },
+    {
+      "prj_id": 45,
+      "pages": 20,
+      "characters": 1317,
+      "sentences": 178
+    },
+    {
+      "prj_id": 28,
+      "pages": 21,
+      "characters": 1301,
+      "sentences": 157
+    },
+    {
+      "prj_id": 79,
+      "pages": 17,
+      "characters": 1232,
+      "sentences": 154
+    },
+    {
+      "prj_id": 130,
+      "pages": 14,
+      "characters": 1209,
+      "sentences": 136
+    },
+    {
+      "prj_id": 126,
+      "pages": 13,
+      "characters": 1174,
+      "sentences": 116
+    },
+    {
+      "prj_id": 32,
+      "pages": 17,
+      "characters": 1130,
+      "sentences": 125
+    },
+    {
+      "prj_id": 39,
+      "pages": 19,
+      "characters": 1129,
+      "sentences": 172
+    },
+    {
+      "prj_id": 25,
+      "pages": 17,
+      "characters": 1123,
+      "sentences": 109
+    },
+    {
+      "prj_id": 124,
+      "pages": 15,
+      "characters": 1096,
+      "sentences": 165
+    },
+    {
+      "prj_id": 129,
+      "pages": 18,
+      "characters": 1015,
+      "sentences": 168
+    },
+    {
+      "prj_id": 29,
+      "pages": 24,
+      "characters": 1015,
+      "sentences": 124
+    },
+    {
+      "prj_id": 132,
+      "pages": 12,
+      "characters": 967,
+      "sentences": 133
+    },
+    {
+      "prj_id": 37,
+      "pages": 13,
+      "characters": 930,
+      "sentences": 89
+    },
+    {
+      "prj_id": 136,
+      "pages": 14,
+      "characters": 771,
+      "sentences": 113
+    },
+    {
+      "prj_id": 27,
+      "pages": 12,
+      "characters": 755,
+      "sentences": 105
+    },
+    {
+      "prj_id": 116,
+      "pages": 2,
+      "characters": 200,
+      "sentences": 23
+    },
+    {
+      "prj_id": 75,
+      "pages": 2,
+      "characters": 150,
+      "sentences": 16
+    },
+    {
+      "prj_id": 70,
+      "pages": 2,
+      "characters": 145,
+      "sentences": 13
+    },
+    {
+      "prj_id": 60,
+      "pages": 2,
+      "characters": 140,
+      "sentences": 10
+    },
+    {
+      "prj_id": 108,
+      "pages": 2,
+      "characters": 120,
+      "sentences": 7
+    },
+    {
+      "prj_id": 64,
+      "pages": 2,
+      "characters": 110,
+      "sentences": 7
+    },
+    {
+      "prj_id": 110,
+      "pages": 2,
+      "characters": 93,
+      "sentences": 13
+    },
+    {
+      "prj_id": 114,
+      "pages": 2,
+      "characters": 86,
+      "sentences": 9
+    },
+    {
+      "prj_id": 83,
+      "pages": 1,
+      "characters": 78,
+      "sentences": 5
+    },
+    {
+      "prj_id": 68,
+      "pages": 2,
+      "characters": 72,
+      "sentences": 10
+    },
+    {
+      "prj_id": 112,
+      "pages": 1,
+      "characters": 68,
+      "sentences": 6
+    },
+    {
+      "prj_id": 77,
+      "pages": 2,
+      "characters": 45,
+      "sentences": 10
+    }
+  ]
+}
