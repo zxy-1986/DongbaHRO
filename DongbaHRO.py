@@ -119,6 +119,14 @@ class JointDataset(Dataset):
                     eigvals, eigvecs = np.linalg.eigh(cov)
                     u = eigvecs[:, -1]
                     u = u / (np.linalg.norm(u) + 1e-8)
+                    
+                    # Resolve PCA sign ambiguity deterministically.
+                    if abs(u[0]) >= abs(u[1]):
+                        if u[0] < 0:
+                            u = -u
+                    else:
+                        if u[1] < 0:
+                            u = -u
                 else:
                     u = np.array([1.0, 0.0], dtype=np.float32)
                     ctr = pts.mean(0)
