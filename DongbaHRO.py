@@ -309,27 +309,54 @@ class SharedBackbone(nn.Module):
         return self.mlp(x)
 
 class JointModelV4(nn.Module):
-    def __init__(self, hidden_dim=256, num_heads=4, dropout=0.1):
+    def __init__(
+        self,
+        hidden_dim=256,
+        num_heads=4,
+        dropout=0.1,
+        use_char_self_attn=False
+    ):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.sent_in_dim = 6 + 4  # geom + dir
-        self.char_in_dim = 6 + 2  # geom + dir
 
-        self.sent_backbone = SharedBackbone(self.sent_in_dim, hidden_dim, dropout)
-        self.sent_self_attn = nn.MultiheadAttention(
-            hidden_dim, num_heads, dropout=dropout, batch_first=True
+        self.hidden_dim = hidden_dim
+        self.use_char_self_attn = use_char_self_attn
+
+        self.sent_in_dim = 6 + 4
+        self.char_in_dim = 6 + 2
+
+        self.sent_backbone = SharedBackbone(
+            self.sent_in_dim, hidden_dim, dropout
         )
+
+        self.sent_self_attn = nn.MultiheadAttention(
+            hidden_dim,
+            num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+
         self.sent_head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, 1)
         )
 
-        self.char_backbone = SharedBackbone(self.char_in_dim, hidden_dim, dropout)
-        self.char_self_attn = nn.MultiheadAttention(
-            hidden_dim, num_heads, dropout=dropout, batch_first=True
+        self.char_backbone = SharedBackbone(
+            self.char_in_dim, hidden_dim, dropout
         )
+
+        if self.use_char_self_attn:
+            self.char_self_attn = nn.MultiheadAttention(
+                hidden_dim,
+                num_heads,
+                dropout=dropout,
+                batch_first=True
+            )
+
         self.char_cross_attn = nn.MultiheadAttention(
-            hidden_dim, num_heads, dropout=dropout, batch_first=True
+            hidden_dim,
+            num_heads,
+            dropout=dropout,
+            batch_first=True
         )
 
         self.fuse = nn.Sequential(
@@ -337,11 +364,11 @@ class JointModelV4(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout)
         )
+
         self.char_head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, 1)
         )
-
     def forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         sb = batch["sentence_bboxes"]
         sd = batch["sentence_dir_feat"]
@@ -365,7 +392,13 @@ class JointModelV4(nn.Module):
         c_geom = _bbox_to_geom_feats_page_norm(cb)
         c_in = torch.cat([c_geom, cd], dim=1)
         c_feat = self.char_backbone(c_in).unsqueeze(0)
-        c_self, _ = self.char_self_attn(c_feat, c_feat, c_feat)
+        
+        if self.use_char_self_attn:
+            c_local, _ = self.char_self_attn(
+                c_feat, c_feat, c_feat
+            )
+        else:
+            c_local = c_feat
 
         # Masked cross-attention
         assert cs.min() >= 0 and cs.max() < S, \
@@ -378,13 +411,18 @@ class JointModelV4(nn.Module):
                 attn_mask[idx, s_id] = 0.0
 
         c_cross, _ = self.char_cross_attn(
-            query=c_self,
+            query=c_local,
             key=s_out.unsqueeze(0),
             value=s_out.unsqueeze(0),
             attn_mask=attn_mask
         )
 
-        c_fused = self.fuse(torch.cat([c_self.squeeze(0), c_cross.squeeze(0)], dim=1))
+        c_fused = self.fuse(
+    torch.cat(
+        [c_local.squeeze(0), c_cross.squeeze(0)],
+        dim=1
+    )
+)
         char_scores = self.char_head(c_fused).squeeze(-1)
 
         return {"sent_scores": sent_scores, "char_scores": char_scores}
