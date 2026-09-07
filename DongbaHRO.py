@@ -1,16 +1,29 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
+HiRO-Net training and ablation implementation.
 
-消融选项：
-1. --no_direction: 禁用方向特征
-2. --no_sent_self_attn: 禁用句子self-attention
-3. --no_char_self_attn: 禁用字符self-attention
-4. --no_mask: 禁用cross-attention的mask
-5. --fusion_type: 特征融合方式 (concat/add/self_only/cross_only)
-6. --stage1_epochs 0: 禁用预训练
-7. --alpha > 0: 启用规则蒸馏（可选辅助loss）
-8. --loss_type: 损失函数类型
+The final HiRO-Net configuration reported in the paper uses:
+- directional features enabled;
+- sentence self-attention enabled;
+- character self-attention disabled;
+- hierarchy-masked cross-attention (MCHA);
+- concatenation-based feature fusion;
+- joint training from the beginning (stage1_epochs=0);
+- RankNet loss;
+- fixed lambda=0.7.
+
+Supported ablation/configuration options:
+1. --use_direction: enable directional features
+2. --no_sent_self_attn: disable sentence self-attention
+3. --no_char_self_attn: disable character self-attention
+4. --no_mask: disable the hierarchy-derived cross-attention mask
+5. --fusion_type: feature fusion mode
+   (concat/add/self_only/cross_only)
+6. --stage1_epochs 0: disable sentence-only pretraining
+7. --lambda_schedule fixed: use a fixed character-loss weight
+8. --alpha > 0: enable optional rule-distillation loss
+9. --loss_type: loss type (ranknet/hinge/listmle)
+
+For the final HiRO-Net configuration, see the command provided in README.md.
 """
 
 from __future__ import annotations
