@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+
+消融选项：
+1. --no_direction: 禁用方向特征
+2. --no_sent_self_attn: 禁用句子self-attention
+3. --no_char_self_attn: 禁用字符self-attention
+4. --no_mask: 禁用cross-attention的mask
+5. --fusion_type: 特征融合方式 (concat/add/self_only/cross_only)
+6. --stage1_epochs 0: 禁用预训练
+7. --alpha > 0: 启用规则蒸馏（可选辅助loss）
+8. --loss_type: 损失函数类型
+"""
 
 from __future__ import annotations
-import argparse, json, math
+import argparse, json, math, random
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +26,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+
+# ============================== Reproducibility ==============================
+def set_random_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # ============================== Metrics ==============================
 def _kendall_tau(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -59,20 +82,26 @@ def compute_five_metrics(y_true_rank: np.ndarray, y_pred_rank: np.ndarray) -> Di
         'pairwise_accuracy': _pairwise_accuracy(y_true_rank, y_pred_rank),
     }
 
+# ============================== Rules ==============================
+def _centers_xyxy(b: np.ndarray) -> np.ndarray:
+    """计算bbox中心点"""
+    return (b[:, :2] + b[:, 2:]) / 2.0
+
+def sentence_rule_order_idx(centers: np.ndarray, rule: str = 'top_to_bottom') -> np.ndarray:
+    """根据规则返回句子的阅读顺序索引"""
+    if rule == 'top_to_bottom':
+        return np.lexsort((-centers[:, 0], centers[:, 1]))
+    elif rule == 'left_to_right':
+        return np.lexsort((centers[:, 1], centers[:, 0]))
+    elif rule == 'right_to_left':
+        return np.lexsort((centers[:, 1], -centers[:, 0]))
+    else:
+        raise ValueError(f'Unknown rule: {rule}')
+
 # ============================== Dataset ==============================
 class JointDataset(Dataset):
-    """
-    
-    每页=1样本：
-      sentence_bboxes: [S,4]              # 输入顺序
-      sentence_labels: [S]                # 人工标注的sentence_id
-      char_bboxes: [N,4]                  # 按人工标注顺序排列
-      char_labels: [N] (0..N-1)           # 全局阅读顺序（人工标注）
-      char_to_sentence_idx: [N]           # 字符所属句子的输入位置索引
-      sentence_dir_feat: [S,4]            # 方向特征（辅助特征）
-      char_dir_feat: [N,2]                # 方向特征（辅助特征）
-    """
-    def __init__(self, data_dir: str, split: str = 'train', use_direction: bool = True):
+    def __init__(self, data_dir: str, split: str = 'train', 
+                 use_direction: bool = True):
         import pandas as pd
         csv_path = f"{data_dir}/{split}.csv"
         print(f"Loading {split} data from {csv_path}...")
@@ -91,23 +120,21 @@ class JointDataset(Dataset):
 
         for page_key, g in df.groupby('page_key'):
             g = g.copy()
-            sent_items = []  # 按"输入索引"顺序保存
+            sent_items = []
             
             for sid_r, sg in g.groupby('sid_rank'):
                 sg = sg.copy()
 
-                # ✅ 按 sentence_index 排序（人工标注的句内顺序）
+                # ✅ 直接按人工标注的sentence_index排序
                 sg = sg.sort_values('sentence_index').copy()
-                sg['sentence_index'] = range(len(sg))  
+                sg['sentence_index'] = range(len(sg))  # 重新编号为0,1,2,...
 
-                # 句框 = union
                 x0 = sg['x0'].min()
                 y0 = sg['y0'].min()
                 x1 = sg['x1'].max()
                 y1 = sg['y1'].max()
                 s_box = np.array([x0, y0, x1, y1], dtype=np.float32)
 
-                # 方向特征：PCA 主方向
                 cx = (sg['x0'].values + sg['x1'].values) * 0.5
                 cy = (sg['y0'].values + sg['y1'].values) * 0.5
                 pts = np.stack([cx, cy], axis=1)
@@ -119,7 +146,7 @@ class JointDataset(Dataset):
                     eigvals, eigvecs = np.linalg.eigh(cov)
                     u = eigvecs[:, -1]
                     u = u / (np.linalg.norm(u) + 1e-8)
-                    
+
                     # Resolve PCA sign ambiguity deterministically.
                     if abs(u[0]) >= abs(u[1]):
                         if u[0] < 0:
@@ -134,7 +161,6 @@ class JointDataset(Dataset):
                 ang = math.atan2(u[1], u[0])
                 s_dir = [float(u[0]), float(u[1]), math.sin(ang), math.cos(ang)]
 
-                # 字层方向（t、p 归一化）
                 u_perp = np.array([-u[1], u[0]], dtype=np.float32)
                 proj_t = (pts - ctr) @ u
                 proj_p = (pts - ctr) @ u_perp
@@ -146,44 +172,39 @@ class JointDataset(Dataset):
 
                 sent_items.append(dict(
                     sid_input=len(sent_items),
-                    sentence_id=int(sg['sentence_id'].iloc[0]),  # ✅ 人工标注的顺序
+                    sentence_id=int(sg['sentence_id'].iloc[0]),  # ✅ 保存人工标注
                     s_box=s_box,
                     s_dir=s_dir,
                     sg=sg,
                     char_dir=char_dir
                 ))
 
-            # 句输入数组
             S = len(sent_items)
             sentence_bboxes = []
             sentence_dir_feat = []
             sentence_ids = []  # ✅ 收集人工标注的sentence_id
-            
             for it in sent_items:
                 sentence_bboxes.append(it['s_box'].tolist())
                 sentence_dir_feat.append(it['s_dir'])
-                sentence_ids.append(it['sentence_id'])
+                sentence_ids.append(it['sentence_id'])  # ✅ 使用人工标注
             
             sentence_bboxes = torch.tensor(sentence_bboxes, dtype=torch.float32)
             sentence_dir_feat = torch.tensor(sentence_dir_feat, dtype=torch.float32)
             
-            # ✅ 直接用人工标注的sentence_id作为标签
+            # ✅ 直接用人工标注的sentence_id作为标签（不用规则！）
             sentence_labels = torch.tensor(sentence_ids, dtype=torch.long)
 
             # ✅ 按人工标注的sentence_id顺序生成全局字符标签
-            # 首先按sentence_id排序sent_items
             sent_items_sorted = sorted(enumerate(sent_items), 
-                                       key=lambda x: x[1]['sentence_id'])
+                                       key=lambda x: sentence_ids[x[0]])
             
             char_bboxes_list = []
             char_to_sentence_idx_list = []
             char_dir_blocks = []
             
-            # 按人工标注的句顺序遍历
             for orig_idx, it in sent_items_sorted:
-                sg = it['sg']  
+                sg = it['sg']  # ✅ 已经按sentence_index排好序了
                 
-                # 累计到全局
                 for _, row in sg.iterrows():
                     char_bboxes_list.append([
                         float(row['x0']), float(row['y0']),
@@ -204,10 +225,8 @@ class JointDataset(Dataset):
             else:
                 char_dir_feat = torch.zeros((char_bboxes.shape[0], 2), dtype=torch.float32)
 
-            # ✅ 全局字符"阅读顺序名次"= 0..N-1（按人工标注拼出来的）
             char_labels = torch.arange(char_bboxes.shape[0], dtype=torch.long)
 
-            # 安全检查
             if char_to_sentence_idx.numel() > 0:
                 cmin = int(char_to_sentence_idx.min().item())
                 cmax = int(char_to_sentence_idx.max().item())
@@ -225,7 +244,7 @@ class JointDataset(Dataset):
                 char_dir_feat=char_dir_feat
             ))
 
-        print(f"  ✓ Loaded {len(self.pages)} pages (using human annotations)")
+        print(f"  ✓ Loaded {len(self.pages)} pages")
 
     def __len__(self):
         return len(self.pages)
@@ -295,7 +314,7 @@ def _bbox_to_geom_feats_page_norm(bboxes: torch.Tensor) -> torch.Tensor:
         torch.log(w / h),
         torch.log(w * h)
     ], dim=1)
-    return feats  # [M, 6]
+    return feats
 
 class SharedBackbone(nn.Module):
     def __init__(self, in_dim: int, hidden: int, drop: float):
@@ -308,67 +327,62 @@ class SharedBackbone(nn.Module):
     def forward(self, x):
         return self.mlp(x)
 
-class JointModelV4(nn.Module):
-    def __init__(
-        self,
-        hidden_dim=256,
-        num_heads=4,
-        dropout=0.1,
-        use_char_self_attn=False
-    ):
+class JointModelV4Ablation(nn.Module):
+    """支持消融实验的模型"""
+    def __init__(self, hidden_dim=256, num_heads=4, dropout=0.1,
+                 use_sent_self_attn=True, use_char_self_attn=True,
+                 use_mask=True, fusion_type='concat'):
         super().__init__()
-
         self.hidden_dim = hidden_dim
+        self.sent_in_dim = 6 + 4  # geom + dir
+        self.char_in_dim = 6 + 2  # geom + dir
+        
+        # 消融选项
+        self.use_sent_self_attn = use_sent_self_attn
         self.use_char_self_attn = use_char_self_attn
+        self.use_mask = use_mask
+        self.fusion_type = fusion_type
 
-        self.sent_in_dim = 6 + 4
-        self.char_in_dim = 6 + 2
-
-        self.sent_backbone = SharedBackbone(
-            self.sent_in_dim, hidden_dim, dropout
-        )
-
-        self.sent_self_attn = nn.MultiheadAttention(
-            hidden_dim,
-            num_heads,
-            dropout=dropout,
-            batch_first=True
-        )
-
+        self.sent_backbone = SharedBackbone(self.sent_in_dim, hidden_dim, dropout)
+        
+        if self.use_sent_self_attn:
+            self.sent_self_attn = nn.MultiheadAttention(
+                hidden_dim, num_heads, dropout=dropout, batch_first=True
+            )
+        
         self.sent_head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, 1)
         )
 
-        self.char_backbone = SharedBackbone(
-            self.char_in_dim, hidden_dim, dropout
-        )
-
+        self.char_backbone = SharedBackbone(self.char_in_dim, hidden_dim, dropout)
+        
         if self.use_char_self_attn:
             self.char_self_attn = nn.MultiheadAttention(
-                hidden_dim,
-                num_heads,
-                dropout=dropout,
-                batch_first=True
+                hidden_dim, num_heads, dropout=dropout, batch_first=True
             )
-
+        
         self.char_cross_attn = nn.MultiheadAttention(
-            hidden_dim,
-            num_heads,
-            dropout=dropout,
-            batch_first=True
+            hidden_dim, num_heads, dropout=dropout, batch_first=True
         )
 
+        # 根据融合类型决定输入维度
+        if fusion_type == 'concat':
+            fuse_in_dim = hidden_dim * 2
+        else:
+            fuse_in_dim = hidden_dim
+        
         self.fuse = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(fuse_in_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
-
+        
         self.char_head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, 1)
         )
+
     def forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         sb = batch["sentence_bboxes"]
         sd = batch["sentence_dir_feat"]
@@ -384,8 +398,13 @@ class JointModelV4(nn.Module):
         s_geom = _bbox_to_geom_feats_page_norm(sb)
         s_in = torch.cat([s_geom, sd], dim=1)
         s_feat = self.sent_backbone(s_in).unsqueeze(0)
-        s_out, _ = self.sent_self_attn(s_feat, s_feat, s_feat)
-        s_out = s_out.squeeze(0)
+        
+        if self.use_sent_self_attn:
+            s_out, _ = self.sent_self_attn(s_feat, s_feat, s_feat)
+            s_out = s_out.squeeze(0)
+        else:
+            s_out = s_feat.squeeze(0)
+        
         sent_scores = self.sent_head(s_out).squeeze(-1)
 
         # Character branch
@@ -394,35 +413,78 @@ class JointModelV4(nn.Module):
         c_feat = self.char_backbone(c_in).unsqueeze(0)
         
         if self.use_char_self_attn:
-            c_local, _ = self.char_self_attn(
-                c_feat, c_feat, c_feat
-            )
+            c_self, _ = self.char_self_attn(c_feat, c_feat, c_feat)
         else:
-            c_local = c_feat
+            c_self = c_feat
 
         # Masked cross-attention
-        assert cs.min() >= 0 and cs.max() < S, \
-            f"char_to_sentence_idx out of range: min={int(cs.min())}, max={int(cs.max())}, S={S}"
+        # ==========================================================
+        # Cross-level interaction and feature fusion
+        # ==========================================================
+
+        # Strict w/o-MCHA ablation:
+        # character ranking uses only the local character representation
+        # and receives no sentence-level cross-attention context.
+        if self.fusion_type == 'self_only':
+            c_fused = self.fuse(c_self.squeeze(0))
+
+        else:
+            # MCHA / cross-attention settings
+            assert cs.min() >= 0 and cs.max() < S, \
+                f"char_to_sentence_idx out of range: min={int(cs.min())}, " \
+                f"max={int(cs.max())}, S={S}"
+
+            if self.use_mask:
+                attn_mask = torch.full(
+                    (N, S),
+                    float('-inf'),
+                    device=device
+                )
+
+                for s_id in range(S):
+                    idx = (cs == s_id).nonzero(
+                        as_tuple=False
+                    ).squeeze(-1)
+
+                    if idx.numel() > 0:
+                        attn_mask[idx, s_id] = 0.0
+            else:
+                attn_mask = None
+
+            c_cross, _ = self.char_cross_attn(
+                query=c_self,
+                key=s_out.unsqueeze(0),
+                value=s_out.unsqueeze(0),
+                attn_mask=attn_mask
+            )
+
+            if self.fusion_type == 'concat':
+                c_fused = self.fuse(
+                    torch.cat(
+                        [
+                            c_self.squeeze(0),
+                            c_cross.squeeze(0)
+                        ],
+                        dim=1
+                    )
+                )
+
+            elif self.fusion_type == 'add':
+                c_fused = self.fuse(
+                    c_self.squeeze(0)
+                    + c_cross.squeeze(0)
+                )
+
+            elif self.fusion_type == 'cross_only':
+                c_fused = self.fuse(
+                    c_cross.squeeze(0)
+                )
+
+            else:
+                raise ValueError(
+                    f"Unknown fusion_type: {self.fusion_type}"
+                )
         
-        attn_mask = torch.full((N, S), float('-inf'), device=device)
-        for s_id in range(S):
-            idx = (cs == s_id).nonzero(as_tuple=False).squeeze(-1)
-            if idx.numel() > 0:
-                attn_mask[idx, s_id] = 0.0
-
-        c_cross, _ = self.char_cross_attn(
-            query=c_local,
-            key=s_out.unsqueeze(0),
-            value=s_out.unsqueeze(0),
-            attn_mask=attn_mask
-        )
-
-        c_fused = self.fuse(
-    torch.cat(
-        [c_local.squeeze(0), c_cross.squeeze(0)],
-        dim=1
-    )
-)
         char_scores = self.char_head(c_fused).squeeze(-1)
 
         return {"sent_scores": sent_scores, "char_scores": char_scores}
@@ -453,7 +515,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict
         m_s = compute_five_metrics(sl.numpy(), s_rank.numpy())
         sent_list.append(m_s)
 
-        # Intra-sentence metrics (weighted)
+        # Intra-sentence metrics
         acc = {
             'kendall_tau': 0.0, 'spearman_rho': 0.0,
             'top1_accuracy': 0.0, 'top3_accuracy': 0.0,
@@ -527,6 +589,15 @@ class TrainConfig:
     patience: int = 10
     use_direction: bool = True
     save_dir: str = "/home/zhengxiaoying/DBManuscripts/reading_order_project/checkpoints"
+    alpha: float = 0.0
+    
+    # 消融选项
+    no_sent_self_attn: bool = False
+    no_char_self_attn: bool = False
+    no_mask: bool = False
+    fusion_type: str = 'concat'
+    exp_name: str = 'baseline'
+    seed: int = 42
 
 def dynamic_lambda_linear(epoch, base_epoch, lambda_max, warmup):
     if epoch < base_epoch:
@@ -540,10 +611,35 @@ def dynamic_lambda_cosine(epoch, base_epoch, lambda_max, total_epochs):
     prog = (epoch - base_epoch) / max(total_epochs - base_epoch, 1)
     return float(lambda_max * 0.5 * (1 - math.cos(math.pi * prog)))
 
+def rule_rank_from_bboxes(sb: torch.Tensor, rule_type: str = 'top_to_bottom') -> torch.Tensor:
+    sb_np = sb.detach().cpu().numpy()
+    centers = _centers_xyxy(sb_np)
+    order = sentence_rule_order_idx(centers, rule=rule_type)
+    ranks = np.empty_like(order)
+    ranks[order] = np.arange(len(order))
+    return torch.from_numpy(ranks).to(sb.device).long()
+
 def train(cfg: TrainConfig):
+    set_random_seed(cfg.seed)
     device = torch.device(cfg.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
-    print("\n✅ Using human-annotated sentence_id and sentence_index")
+    print(f"\n{'='*60}")
+    print(f"Experiment: {cfg.exp_name}")
+    print(f"{'='*60}")
+    print(f"Ablation Settings:")
+    print(f"  - Use direction: {cfg.use_direction}")
+    print(f"  - Sent self-attn: {not cfg.no_sent_self_attn}")
+    print(f"  - Char self-attn: {not cfg.no_char_self_attn}")
+    print(f"  - Use mask: {not cfg.no_mask}")
+    print(f"  - Fusion type: {cfg.fusion_type}")
+    print(f"  - Stage1 epochs: {cfg.stage1_epochs}")
+    print(f"  - Lambda schedule: {cfg.lambda_schedule}")
+    print(f"  - Lambda max: {cfg.lambda_max}")
+    print(f"  - Lambda warmup: {cfg.lambda_warmup}")
+    print(f"  - Seed: {cfg.seed}")
+    print(f"  - Rule distillation alpha: {cfg.alpha}")
+    print(f"  - Loss type: {cfg.loss_type}")
+    print(f"{'='*60}\n")
 
     train_set = JointDataset(cfg.data_dir, 'train', use_direction=cfg.use_direction)
     val_set = JointDataset(cfg.data_dir, 'val', use_direction=cfg.use_direction)
@@ -553,45 +649,63 @@ def train(cfg: TrainConfig):
     val_loader = DataLoader(val_set, batch_size=1, shuffle=False, collate_fn=joint_collate_fn)
     test_loader = DataLoader(test_set, batch_size=1, shuffle=False, collate_fn=joint_collate_fn)
 
-    model = JointModelV4(cfg.hidden_dim, cfg.num_heads, cfg.dropout).to(device)
+    model = JointModelV4Ablation(
+        cfg.hidden_dim, cfg.num_heads, cfg.dropout,
+        use_sent_self_attn=not cfg.no_sent_self_attn,
+        use_char_self_attn=not cfg.no_char_self_attn,
+        use_mask=not cfg.no_mask,
+        fusion_type=cfg.fusion_type
+    ).to(device)
+    
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
     loss_fn = make_loss_fn(cfg.loss_type)
 
-    save_dir = Path(cfg.save_dir) / f"joint_v4_corrected_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_dir = Path(cfg.save_dir) / f"ablation_{cfg.exp_name}_seed{cfg.seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_dir.mkdir(parents=True, exist_ok=True)
     best_tau = -1.0
 
-    # ============ Stage I: Sentence-only pretrain ============
-    print("\n===== Stage I: Sentence-only pretrain =====")
-    for ep in range(1, cfg.stage1_epochs + 1):
-        model.train()
-        ep_loss = 0.0
-        
-        for batch in tqdm(train_loader, desc=f"Stage I Epoch {ep}/{cfg.stage1_epochs}"):
-            batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) 
-                     for k, v in batch.items()}
+    # Stage I
+    if cfg.stage1_epochs > 0:
+        print("\n===== Stage I: Sentence-only pretrain =====")
+        for ep in range(1, cfg.stage1_epochs + 1):
+            model.train()
+            ep_loss = 0.0
             
-            optimizer.zero_grad()
-            out = model(batch)
-            loss = loss_fn(out['sent_scores'], batch['sentence_labels'])
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-            optimizer.step()
-            ep_loss += float(loss.item())
-        
-        scheduler.step()
-        print(f"  Stage I avg loss: {ep_loss / max(len(train_loader), 1):.4f}")
+            for batch in tqdm(train_loader, desc=f"Stage I Epoch {ep}/{cfg.stage1_epochs}"):
+                batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) 
+                         for k, v in batch.items()}
+                
+                optimizer.zero_grad()
+                out = model(batch)
 
-    # ============ Stage II: Joint training ============
+                loss_s = loss_fn(out['sent_scores'], batch['sentence_labels'])
+                
+                if cfg.alpha > 0.0:
+                    rule_rank = rule_rank_from_bboxes(batch['sentence_bboxes'])
+                    loss_rule = loss_fn(out['sent_scores'], rule_rank)
+                    loss = loss_s + cfg.alpha * loss_rule
+                else:
+                    loss = loss_s
+
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+                optimizer.step()
+                ep_loss += float(loss.item())
+            
+            scheduler.step()
+            print(f"  Stage I avg loss: {ep_loss / max(len(train_loader), 1):.4f}")
+
+    # Stage II
     print("\n===== Stage II: Joint training =====")
     for ep in range(cfg.stage1_epochs + 1, cfg.epochs + 1):
         model.train()
         tot, s_l, c_l = 0.0, 0.0, 0.0
 
-        # λ schedule
         if cfg.lambda_schedule == 'cosine':
             lam = dynamic_lambda_cosine(ep, cfg.stage1_epochs + 1, cfg.lambda_max, cfg.epochs)
+        elif cfg.lambda_schedule == 'fixed':
+            lam = float(cfg.lambda_max)
         else:
             lam = dynamic_lambda_linear(ep, cfg.stage1_epochs + 1, cfg.lambda_max, cfg.lambda_warmup)
 
@@ -604,7 +718,14 @@ def train(cfg: TrainConfig):
 
             loss_s = loss_fn(out['sent_scores'], batch['sentence_labels'])
             loss_c = loss_fn(out['char_scores'], batch['char_labels'])
-            loss = loss_s + lam * loss_c
+
+            if cfg.alpha > 0.0:
+                rule_rank = rule_rank_from_bboxes(batch['sentence_bboxes'], 
+                                                  rule_type='top_to_bottom')
+                loss_rule = loss_fn(out['sent_scores'], rule_rank)
+                loss = loss_s + lam * loss_c + cfg.alpha * loss_rule
+            else:
+                loss = loss_s + lam * loss_c
 
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -635,7 +756,7 @@ def train(cfg: TrainConfig):
             }, save_dir / 'best_model.pth')
             print(f"  ✓ Best model saved (Val global τ={best_tau:.4f})")
 
-    # ============ Final Test ============
+    # Final Test
     print("\n===== Final Test =====")
     ckpt = torch.load(save_dir / 'best_model.pth', map_location=device)
     model.load_state_dict(ckpt['model_state_dict'])
@@ -644,13 +765,16 @@ def train(cfg: TrainConfig):
     
     with open(save_dir / 'results.json', 'w') as f:
         json.dump({
-            'model': 'JointModelV4 (Human Annotations)',
+            'exp_name': cfg.exp_name,
             'val_best': ckpt['val_metrics'],
             'test': test,
             'config': cfg.__dict__
         }, f, indent=2, ensure_ascii=False)
     
     print(f"✓ Results saved to {save_dir}")
+    
+    # 返回测试指标供汇总
+    return test
 
 # ============================== Main ==============================
 if __name__ == '__main__':
@@ -669,7 +793,7 @@ if __name__ == '__main__':
     ap.add_argument('--lambda_max', type=float, default=0.7)
     ap.add_argument('--lambda_warmup', type=int, default=6)
     ap.add_argument('--lambda_schedule', type=str, 
-                   choices=['linear', 'cosine'], 
+                   choices=['linear', 'cosine', 'fixed'], 
                    default='linear')
     ap.add_argument('--lr', type=float, default=1e-3)
     ap.add_argument('--weight_decay', type=float, default=1e-5)
@@ -678,6 +802,23 @@ if __name__ == '__main__':
     ap.add_argument('--use_direction', action='store_true')
     ap.add_argument('--save_dir', type=str,
                    default='/home/zhengxiaoying/DBManuscripts/reading_order_project/checkpoints')
+    ap.add_argument('--alpha', type=float, default=0.0)
+    
+    # 消融选项
+    ap.add_argument('--no_sent_self_attn', action='store_true',
+                   help='禁用句子self-attention')
+    ap.add_argument('--no_char_self_attn', action='store_true',
+                   help='禁用字符self-attention')
+    ap.add_argument('--no_mask', action='store_true',
+                   help='禁用cross-attention的mask')
+    ap.add_argument('--fusion_type', type=str,
+                   choices=['concat', 'add', 'self_only', 'cross_only'],
+                   default='concat',
+                   help='特征融合方式')
+    ap.add_argument('--exp_name', type=str, default='baseline',
+                   help='实验名称')
+    ap.add_argument('--seed', type=int, default=42,
+                   help='随机种子，用于多次重复实验')
     
     args = ap.parse_args()
     cfg = TrainConfig(**vars(args))
