@@ -588,7 +588,7 @@ class TrainConfig:
     grad_clip: float = 1.0
     patience: int = 10
     use_direction: bool = True
-    save_dir: str = "/home/zhengxiaoying/DBManuscripts/reading_order_project/checkpoints"
+    save_dir: str = "./checkpoints"
     alpha: float = 0.0
     
     # 消融选项
@@ -780,7 +780,7 @@ def train(cfg: TrainConfig):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--data_dir', type=str,
-                   default='/home/zhengxiaoying/DBManuscripts/dongba_data_splits_by_page')
+                   default='./dongba_data_splits_by_page')
     ap.add_argument('--device', type=str, default='cuda')
     ap.add_argument('--hidden_dim', type=int, default=256)
     ap.add_argument('--num_heads', type=int, default=4)
@@ -801,7 +801,7 @@ if __name__ == '__main__':
     ap.add_argument('--patience', type=int, default=10)
     ap.add_argument('--use_direction', action='store_true')
     ap.add_argument('--save_dir', type=str,
-                   default='/home/zhengxiaoying/DBManuscripts/reading_order_project/checkpoints')
+                   default='./checkpoints')
     ap.add_argument('--alpha', type=float, default=0.0)
     
     # 消融选项
